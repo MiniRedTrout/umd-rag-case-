@@ -103,6 +103,7 @@ class IndexingConfig(BaseModel):
     visibility_timeout_s: float = Field(default=300.0, ge=1.0, le=1800.0)
     visibility_poll_interval_s: float = Field(default=2.0, ge=0.1, le=30.0)
     visibility_stall_s: float = Field(default=60.0, ge=1.0, le=1800.0)
+    concurrency: int = Field(default=4, ge=1, le=16)
 
 
 class ModelProfile(BaseModel):

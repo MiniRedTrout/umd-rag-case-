@@ -1,3 +1,31 @@
 agent:
+  retrieval:
+    chunks_to_retrieve: 15
+    top_k: 3
+    chunk_expansion: 1
+    concurrency: 8
+
+  synthesis:
+    max_context_documents: 3
+    max_context_chars: 8000
+    answer_max_tokens: 2048
+
+  chunking:
+    chunk_size: 384
+    chunk_overlap: 64
+
+  indexing:
+    concurrency: 4
+    bulk_auth_retries: 3
+    bulk_auth_backoff_s: 2.0
+
+  memory:
+    enabled: true
+    max_turns: 3
+
+  history:
+    max_messages: 20
+    max_message_chars: 4000
+  
   embedding:
     max_batch_size: 32

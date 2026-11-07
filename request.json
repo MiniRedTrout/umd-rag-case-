@@ -1,8 +1,0 @@
-{
-  "model_name": "openai/gpt-oss-120b",
-  "messages": [
-    {"role": "user", "content": "Как составлять нормативно методический документ?"}
-  ],
-  "conversation_id": "test-001",
-  "max_tokens": 512
-}
