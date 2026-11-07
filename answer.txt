@@ -1,0 +1,6 @@
+event: response_start
+data: {"type": "response_start"}
+
+event: status
+data: {"type": "status", "text": "Ищу релевантные фрагменты в базе знаний…"}
+

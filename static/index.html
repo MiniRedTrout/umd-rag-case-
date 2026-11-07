@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>УМД — Чат по документам</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    background: #f4f5f7;
+    color: #1a1a1a;
+  }
+  .app {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0 16px;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0;
+  }
+  header .actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 8px 14px;
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    background: white;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .btn:hover { background: #f0f0f0; }
+  .btn.primary {
+    background: #1976d2;
+    color: white;
+    border-color: #1976d2;
+  }
+  .btn.primary:hover { background: #1565c0; }
+  .btn:disabled { background: #90a4ae; border-color: #90a4ae; cursor: not-allowed; }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    background: white;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    scroll-behavior: smooth;
+  }
+  .msg {
+    margin: 10px 0;
+    padding: 10px 14px;
+    border-radius: 12px;
+    max-width: 80%;
+    white-space: pre-wrap;
+    line-height: 1.5;
+    word-wrap: break-word;
+  }
+  .user {
+    background: #e3f2fd;
+    margin-left: auto;
+  }
+  .assistant {
+    background: #f1f3f4;
+    margin-right: auto;
+  }
+  .error {
+    background: #ffebee;
+    color: #b71c1c;
+  }
+  .status {
+    background: transparent;
+    color: #666;
+    font-size: 13px;
+    font-style: italic;
+    text-align: center;
+    padding: 2px 0;
+    margin: 2px 0;
+    max-width: 100%;
+  }
+
+  form {
+    display: flex;
+    gap: 8px;
+    padding-top: 12px;
+  }
+  #input {
+    flex: 1;
+    padding: 12px 14px;
+    border: 1px solid #ccc;
+    border-radius: 12px;
+    font-size: 16px;
+    font-family: inherit;
+  }
+  #input:disabled { background: #f5f5f5; }
+
+  .meta {
+    font-size: 12px;
+    color: #666;
+    margin-top: 8px;
+    min-height: 16px;
+  }
+
+  /* Загрузка */
+  .upload-panel {
+    display: none;
+    background: white;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .upload-panel.open { display: block; }
+  .upload-panel input[type=file] { margin: 8px 0; }
+  .upload-panel .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .import-status {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #555;
+    min-height: 16px;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>УМД — Чат по документам</h1>
+    <div class="actions">
+      <button class="btn" id="uploadBtn" type="button">Загрузить документы</button>
+      <button class="btn" id="clearBtn" type="button">Очистить</button>
+    </div>
+  </header>
+
+  <div class="upload-panel" id="uploadPanel">
+    <div><strong>Загрузка zip с .txt / .docx</strong></div>
+    <input type="file" id="fileInput" accept=".zip" />
+    <div class="row">
+      <button class="btn primary" id="sendFileBtn" type="button" disabled>Импортировать</button>
+      <span id="uploadName" style="font-size:13px;color:#666;"></span>
+    </div>
+    <div class="import-status" id="importStatus"></div>
+  </div>
+
+  <div id="chat"></div>
+
+  <form id="form">
+    <input id="input" placeholder="Введите вопрос..." autocomplete="off" />
+    <button class="btn primary" id="send" type="submit">Спросить</button>
+  </form>
+
+  <div class="meta" id="meta"></div>
+</div>
+
+<script>
+const API = "";  // "" = тот же хост. Или "http://<ip>:8000"
+const MODEL = "openai/gpt-oss-120b";
+const MAX_TOKENS = 512;
+
+const chat = document.getElementById("chat");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+const meta = document.getElementById("meta");
+const uploadBtn = document.getElementById("uploadBtn");
+const uploadPanel = document.getElementById("uploadPanel");
+const fileInput = document.getElementById("fileInput");
+const sendFileBtn = document.getElementById("sendFileBtn");
+const uploadName = document.getElementById("uploadName");
+const importStatus = document.getElementById("importStatus");
+const clearBtn = document.getElementById("clearBtn");
+
+let conversationId = localStorage.getItem("conversation_id");
+if (!conversationId) {
+  conversationId = "web-" + Math.random().toString(36).slice(2, 10);
+  localStorage.setItem("conversation_id", conversationId);
+}
+
+function appendMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function appendStatus(text) {
+  const div = document.createElement("div");
+  div.className = "msg status";
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function setMeta(text) {
+  meta.textContent = text || "";
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = "";
+  input.disabled = true;
+  send.disabled = true;
+  setMeta("Думаю…");
+
+  appendMessage("user", question);
+  const assistantDiv = appendMessage("assistant", "");
+  let answer = "";
+  let lastStatusDiv = null;
+
+  try {
+    const response = await fetch(API + "/chat/stream", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        model_name: MODEL,
+        messages: [{role: "user", content: question}],
+        conversation_id: conversationId,
+        max_tokens: MAX_TOKENS,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      assistantDiv.className = "msg error";
+      assistantDiv.textContent = "Ошибка: HTTP " + response.status + " - " + err;
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+
+      for (const chunk of parts) {
+        const dataLine = chunk.split("\n").find(l => l.startsWith("data: "));
+        if (!dataLine) continue;
+        let payload;
+        try {
+          payload = JSON.parse(dataLine.slice(6));
+        } catch (e) {
+          continue;
+        }
+
+        if (payload.type === "status") {
+          lastStatusDiv = appendStatus(payload.text);
+        } else if (payload.type === "message_start") {
+          // nothing
+        } else if (payload.type === "message_delta") {
+          answer += payload.text || "";
+          assistantDiv.textContent = answer;
+          chat.scrollTop = chat.scrollHeight;
+        } else if (payload.type === "message_end") {
+          if (!answer) {
+            assistantDiv.textContent = payload.text || "(пусто)";
+          }
+          const u = payload.usage || {};
+          setMeta(
+            `Токены: вход ${u.input_tokens || 0}, ` +
+            `выход ${u.output_tokens || 0}, ` +
+            `всего ${u.total_tokens || 0}`
+          );
+        } else if (payload.type === "error") {
+          assistantDiv.className = "msg error";
+          assistantDiv.textContent =
+            "Ошибка: " + (payload.error && payload.error.message || "unknown");
+        }
+      }
+    }
+  } catch (err) {
+    assistantDiv.className = "msg error";
+    assistantDiv.textContent = "Сеть: " + err.message;
+  } finally {
+    input.disabled = false;
+    send.disabled = false;
+    input.focus();
+    if (!answer && !assistantDiv.textContent) {
+      assistantDiv.textContent = "(ответ не получен)";
+    }
+  }
+});
+
+uploadBtn.addEventListener("click", () => {
+  uploadPanel.classList.toggle("open");
+});
+
+fileInput.addEventListener("change", () => {
+  const f = fileInput.files[0];
+  uploadName.textContent = f ? f.name + " (" + Math.round(f.size / 1024) + " ��)" : "";
+  sendFileBtn.disabled = !f;
+});
+
+sendFileBtn.addEventListener("click", async () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+
+  sendFileBtn.disabled = true;
+  importStatus.textContent = "Загружаю архив…";
+
+  const fd = new FormData();
+  fd.append("file", f);
+
+  try {
+    const response = await fetch(API + "/internal/knowledge/import", {
+      method: "POST",
+      body: fd,
+    });
+    const data = await response.json();
+    if (response.ok) {
+      importStatus.textContent = "Принято: " + (data.message || "в очереди");
+      pollImportStatus();
+    } else {
+      importStatus.textContent = "Ошибка: HTTP " + response.status + " - " + JSON.stringify(data);
+    }
+  } catch (err) {
+    importStatus.textContent = "Сеть: " + err.message;
+  } finally {
+    sendFileBtn.disabled = false;
+  }
+});
+
+async function pollImportStatus() {
+  try {
+    const response = await fetch(API + "/internal/knowledge/import-status");
+    if (!response.ok) return;
+    const data = await response.json();
+    importStatus.textContent =
+      (data.status || "idle") + ": " + (data.message || "");
+    if (data.status === "processing") {
+      setTimeout(pollImportStatus, 2000);
+    }
+  } catch (err) {
+  }
+}
+
+clearBtn.addEventListener("click", () => {
+  conversationId = "web-" + Math.random().toString(36).slice(2, 10);
+  localStorage.setItem("conversation_id", conversationId);
+  chat.innerHTML = "";
+  setMeta("Новый диалог: " + conversationId);
+});
+</script>
+</body>
+</html>
