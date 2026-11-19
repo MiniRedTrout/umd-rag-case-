@@ -3,7 +3,7 @@ agent:
     chunks_to_retrieve: 15
     top_k: 3
     chunk_expansion: 1
-    concurrency: 8
+    concurrency: 2
 
   synthesis:
     max_context_documents: 3
@@ -15,7 +15,7 @@ agent:
     chunk_overlap: 64
 
   indexing:
-    concurrency: 4
+    concurrency: 1
     bulk_auth_retries: 3
     bulk_auth_backoff_s: 2.0
 
@@ -28,4 +28,4 @@ agent:
     max_message_chars: 4000
   
   embedding:
-    max_batch_size: 32
+    max_batch_size: 64

@@ -6,7 +6,7 @@ from enum import StrEnum
 
 CONTENT_ORIGIN_HEADER = "X-Content-Origin"
 SERVICE_NAME_HEADER = "X-Service-Name"
-DEFAULT_SERVICE_NAME = "spok-case-nmd"
+DEFAULT_SERVICE_NAME = "case-umd"
 
 
 class InputProvenance(StrEnum):

@@ -4,7 +4,6 @@ from src.api.endpoints import chat, health, info, models
 from src.api.endpoints.upload import upload_router
 from src.api.endpoints import metrics as metrics_endpoint
 
-
 api_router = APIRouter()
 
 prefix = "/api/system/v1"

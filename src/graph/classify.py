@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import re 
-from typing import Any 
+import re
+from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, ConfigDict, Field 
+from pydantic import BaseModel, ConfigDict, Field
 
-from src.graph.state import ChatGraphState 
+from src.graph.prompt import get_classify_prompt  # <-- ИМПОРТ ПРОМПТА
+from src.graph.state import ChatGraphState
 from src.models.llms.llm_factory import LLMFactory
 from src.models.llms.request_policy import (
     InputProvenance,
@@ -56,14 +57,14 @@ _SHORT_GREETING_MAX_WORDS = 5
 
 def _looks_like_smalltalk(question: str) -> bool:
     if not question:
-        return False 
+        return False
     if _PURE_SMALLTALK_RE.match(question):
-        return True 
+        return True
     if _GREETING_PREFIX_RE.match(question):
-        return False 
+        return False
     if len(question.split()) > _SHORT_GREETING_MAX_WORDS:
-        return False 
-    return False 
+        return False
+    return False
 
 
 class ClassifiedRequest(BaseModel):
@@ -93,6 +94,8 @@ def make_classify_node():
             **(state.get("llm_params") or {}),
         )
         llm_params.max_tokens = 200
+        llm_params.temperature = 0.0
+        
         model = LLMFactory(
             model_name=llm_params.model_name,
             llm_params=llm_params,
@@ -103,18 +106,7 @@ def make_classify_node():
         ).model
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "Ты классификатор сообщений в корпоративном чате по документам.\n"
-             "Определи, что это за сообщение:\n"
-             "- smalltalk: приветствие, прощание, благодарность, светский вопрос "
-             "(«Как дела?»), короткая реплика без запроса информации. "
-             "В поле answer напиши короткий вежливый ответ (1–2 предложения).\n"
-             "- question: запрос найти информацию, документ, объяснить что-то. "
-             "В поле answer оставь пустую строку.\n\n"
-             "ВАЖНО: если сообщение начинается с приветствия, но затем содержит "
-             "вопрос или просьбу («Привет, а скажи мне…», «Здравствуйте! "
-             "Подскажите, какой срок…») — это question, а не smalltalk.\n\n"
-             "Если сомневаешься — выбирай question.",),
+            ("system", get_classify_prompt()),
             ("human", "Сообщение: {question}"),
         ])
 

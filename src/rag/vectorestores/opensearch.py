@@ -137,45 +137,33 @@ def _log_progress(
     started_at: float,
     reported_percent: float,
 ) -> float:
-    """Log indexing progress at percentage milestones over documents.
 
-    Args:
-        index_name: Index being populated.
-        documents_done: Documents whose chunks have all been indexed.
-        documents_total: Total documents when known; None falls back to chunks.
-        chunks_done: Chunks indexed so far.
-        started_at: Monotonic start time.
-        reported_percent: Last reported progress percentage.
+    elapsed = time.monotonic() - started_at
 
-    Returns:
-        float — Newly reported progress percentage.
-    """
     if documents_total:
         done = documents_done
         total = documents_total
-        unit = "документов"
-        detail = f", {chunks_done} чанка"
-    else:
-        done = chunks_done
-        total = max(chunks_done, 1)
-        unit = "chunks"
-        detail = ""
+        percent = done / total * 100 if total else 100.0
+        if percent - reported_percent < _PROGRESS_STEP_PERCENT and done < total:
+            return reported_percent
+        remaining = (
+            f", ~{(total - done) * elapsed / done:.0f}s left"
+            if done and done < total
+            else ""
+        )
+        logger.info(
+            f"Indexing '{index_name}': {percent:.0f}% "
+            f"({done}/{total} документов, {chunks_done} чанков, "
+            f"{elapsed:.0f}s elapsed{remaining})"
+        )
+        return percent
 
-    percent = done / total * 100 if total else 100.0
-    if percent - reported_percent < _PROGRESS_STEP_PERCENT and done < total:
-        return reported_percent
-
-    elapsed = time.monotonic() - started_at
-    remaining = (
-        f", ~{(total - done) * elapsed / done:.0f}s left"
-        if done and done < total
-        else ""
-    )
+    rate = chunks_done / elapsed if elapsed > 0 else 0.0
     logger.info(
-        f"Indexing '{index_name}': {percent:.0f}% ({done}/{total} {unit}"
-        f"{detail}, {elapsed:.0f}s elapsed{remaining})"
+        f"Indexing '{index_name}': {chunks_done} чанков, "
+        f"{elapsed:.0f}s elapsed, ~{rate:.1f} chunks/s"
     )
-    return percent
+    return reported_percent
 
 
 def _pull_batch(stream: Iterator[ChunkRecord], batch_size: int) -> list[ChunkRecord]:
@@ -417,12 +405,8 @@ class AsyncOpenSearchWrapper:
             embed_started = time.monotonic()
             try:
                 batch_vectors_e5, batch_vectors_bge = await asyncio.gather(
-                    self.embeddings_e5.aembed_documents(
-                        batch_texts, chunk_keys=batch_keys
-                    ),
-                    self.embeddings_bge.aembed_documents(
-                        batch_texts, chunk_keys=batch_keys
-                    ),
+                    self.embeddings_e5.aembed_documents(batch_texts),
+                    self.embeddings_bge.aembed_documents(batch_texts),
                 )
                 if len(batch_vectors_e5) != item_count:
                     raise RuntimeError(

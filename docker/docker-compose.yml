@@ -5,7 +5,11 @@ services:
     environment:
       - discovery.type=single-node
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=MyStrongPass123!
-      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      # 1. Увеличиваем память Java (было 1g, стало 2g)
+      - "OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g"
+      # 2. Отключаем проверку bootstrap-чек (экономит память и CPU при старте)
+      - "bootstrap.memory_lock=true"
+      - "DISABLE_SECURITY_PLUGIN=true" # Отключаем SSL (ваш код использует http)
     ports:
       - "9200:9200"
     volumes:

@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from py_gpn_postgres.common.env_wrapper import get_env_var, get_optional_env_var
+from src.utils.env_wrapper import get_env_var, get_optional_env_var
 from src.memory.config import SCHEMA, load_memory_database_config
 from src.memory.entities import Base
 from src.memory.migrations.run_migrations import MIGRATION_LOCK_KEY

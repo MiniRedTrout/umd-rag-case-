@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 
 from src.core.config.agent_config import get_agent_config
 from src.core.config.llm_config import llm_settings
 from src.graph.state import ChatGraphState
-from src.schemas.events import status_event          # NEW
+from src.models.llms.llm_factory import LLMFactory
+from src.models.llms.request_policy import (
+    InputProvenance,
+    LLMRequestPolicy,
+    OutputAudience,
+)
+from src.schemas.events import status_event
+from src.schemas.query import LLMParams
 from src.utils.logger import logger
 from src.utils.metrics import record_retrieval
-
 
 DEFAULT_CONTEXT_BUDGET_CHARS = 8000
 
@@ -22,6 +29,49 @@ def _writer():
         return get_stream_writer()
     except RuntimeError:
         return lambda _payload: None
+
+
+async def _reformulate_query(question: str, state: ChatGraphState, config: RunnableConfig) -> str:
+    """Просит LLM переформулировать вопрос, если первый поиск не дал результатов."""
+    logger.info(f"[retrieve] Zero hits, reformulating query: {question!r}")
+    
+    llm_params = LLMParams(
+        model_name=state.get("model_name", ""),
+        **(state.get("llm_params") or {}),
+    )
+    llm_params.max_tokens = 100
+    llm_params.temperature = 0.0
+    
+    model = LLMFactory(
+        model_name=llm_params.model_name,
+        llm_params=llm_params,
+        request_policy=LLMRequestPolicy(
+            input_provenance=InputProvenance.NON_END_USER,
+            output_audience=OutputAudience.INTERNAL,
+        ),
+    ).model
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", 
+         "Ты — помощник по поиску в базе знаний. Пользователь не нашел информацию по своему вопросу. "
+         "Твоя задача — переформулировать его вопрос, чтобы поиск сработал лучше.\n"
+         "Правила:\n"
+         "1. Раскрой все аббревиатуры (например, ВИЭ -> возобновляемые источники энергии).\n"
+         "2. Используй синонимы и официальные термины.\n"
+         "3. Убери лишние слова (вроде 'подскажите', 'найдите').\n"
+         "Верни ТОЛЬКО новый текст запроса, без кавычек и пояснений."),
+        ("human", "Исходный вопрос: {question}"),
+    ])
+    
+    try:
+        chain = prompt | model
+        result = await chain.ainvoke({"question": question}, config=config)
+        new_query = result.content.strip()
+        logger.info(f"[retrieve] Reformulated to: {new_query!r}")
+        return new_query
+    except Exception:
+        logger.exception("[retrieve] Failed to reformulate query")
+        return question
 
 
 def _trim_context_by_budget(
@@ -53,7 +103,7 @@ def make_retrieve_node():
     async def retrieve_node(
         state: ChatGraphState, config: RunnableConfig = None
     ) -> dict[str, Any]:
-        writer = _writer()                            # NEW
+        writer = _writer()
         question = (state.get("question") or "").strip()
         if not question:
             return {"context": [], "references": []}
@@ -61,7 +111,7 @@ def make_retrieve_node():
         retrieval = get_agent_config().retrieval
         synthesis = get_agent_config().synthesis
 
-        writer(status_event(text="Ищу релевантные фрагменты в базе знаний…"))  # NEW
+        writer(status_event(text="Ищу релевантные фрагменты в базе знаний…"))
 
         try:
             records = await llm_settings.REPOSITORY.search(
@@ -69,16 +119,31 @@ def make_retrieve_node():
             )
         except Exception:
             logger.exception("[retrieve] search failed")
-            record_retrieval(0)
-            writer(status_event(text="Поиск не удался, отвечаю без контекста."))  # NEW
+            writer(status_event(text="Поиск не удался, отвечаю без контекста."))
             return {"context": [], "references": []}
+
+        # ВТОРАЯ ПОПЫТКА (если пусто)
+        if not records:
+            writer(status_event(text="Ничего не нашёл, пробую переформулировать вопрос…"))
+            reformulated = await _reformulate_query(question, state, config)
+            
+            if reformulated and reformulated != question:
+                try:
+                    records = await llm_settings.REPOSITORY.search(
+                        [reformulated], limit=retrieval.chunks_to_retrieve
+                    )
+                except Exception:
+                    logger.exception("[retrieve] reformulated search failed")
+                    records = []
 
         record_retrieval(len(records))
+
         if not records:
-            writer(status_event(text="Ничего не нашёл по этому вопросу."))  # NEW
+            writer(status_event(text="Ничего не нашёл по этому вопросу."))
             return {"context": [], "references": []}
 
-        writer(status_event(text=f"Нашёл {len(records)} фрагментов, отбираю лучшие…"))  # NEW
+        writer(status_event(text=f"Нашёл {len(records)} фрагментов, отбираю лучшие…"))
+
         first_rank: dict[str, int] = {}
         by_doc: dict[str, list] = {}
         for rank, record in enumerate(records):
@@ -100,7 +165,7 @@ def make_retrieve_node():
             )
         except Exception:
             logger.exception("[retrieve] context expansion failed")
-            writer(status_event(text="Не удалось собрать контекст."))  # NEW
+            writer(status_event(text="Не удалось собрать контекст."))
             return {"context": [], "references": []}
 
         context: list[dict[str, Any]] = []
@@ -130,7 +195,7 @@ def make_retrieve_node():
         )
         writer(status_event(
             text=f"В контексте {len(context)} фрагментов ({used_chars} симв.)."
-        ))  
+        ))
         return {"context": context, "references": []}
 
     return retrieve_node

@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from src.utils.env_wrapper import get_optional_env_var
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / "applications.conf")
+load_dotenv(_PROJECT_ROOT / ".env")
 
 __all__ = [
     "MemoryConfigError",

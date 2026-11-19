@@ -67,12 +67,22 @@ async def process_zip_background(zip_content: bytes) -> None:
 
         message = "Import completed"
         if loaded.chunks:
-            logger.info("Adding chunks to vector store...")
-            await llm_settings.opensearch_wrapper.add_chunks(loaded.chunks)
+            total_documents = len({c.doc_id for c in loaded.chunks})
+            logger.info(
+                f"Adding {len(loaded.chunks)} chunks from {total_documents} documents "
+                f"to vector store..."
+            )
+            await llm_settings.opensearch_wrapper.add_chunks(
+                loaded.chunks,
+                total_documents=total_documents,
+            )
             await _validate(settings.OPENSEARCH_COLLECTION, expected=len(loaded.chunks))
             chunks_count = len(loaded.chunks)
-            documents_count = len({c.doc_id for c in loaded.chunks})
-            message = f"Successfully loaded {chunks_count} chunks"
+            documents_count = total_documents
+            message = (
+                f"Successfully loaded {chunks_count} chunks "
+                f"from {documents_count} documents"
+            )
 
         processing_status = {"status": "completed", "message": message}
 

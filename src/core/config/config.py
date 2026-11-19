@@ -2,9 +2,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.utils.env_wrapper import get_env_var, get_optional_env_var
+from src.utils.env_wrapper import get_bool_env_var, get_env_var, get_optional_env_var
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Keep experiment switches in a separate, non-secret configuration file.
+load_dotenv(_PROJECT_ROOT / "applications.conf")
 load_dotenv(_PROJECT_ROOT / ".env")
 
 
@@ -20,6 +22,11 @@ class Settings:
     CHUNK_WINDOW_SIZE = 1
     SORT_ASCENDING_ONE_DOCUMENT_CONTEXT = True
     GROUP_ONE_DOCUMENT_CONTEXT = True
+
+    SECTIONAL_PARSING_ENABLED = get_bool_env_var("SECTIONAL_PARSING_ENABLED", True)
+    TEXT_SPLITTER = get_env_var("TEXT_SPLITTER", "recursive").lower()
+    if TEXT_SPLITTER not in {"recursive", "markdown"}:
+        raise ValueError("TEXT_SPLITTER must be either 'recursive' or 'markdown'")
 
     OPENSEARCH_USE_SSL = get_env_var("OPENSEARCH_USE_SSL", "false").lower() == "true"
     OPENSEARCH_VERIFY_CERTS = get_env_var("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"

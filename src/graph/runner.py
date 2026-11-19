@@ -4,14 +4,15 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+from langfuse import get_client, propagate_attributes  # <-- LANGFUSE
+
 from src.graph.graph import build_chat_graph
-from src.schemas.events import SSEEventPayload, SSEEventType
+from src.graph.prompt import prompt_version_hash  
+from src.schemas.events import SSEEventPayload
 from src.schemas.query import QueryChat
 from src.utils.logger import logger
 
 _graph: Any = None
-
-_NON_TERMINAL_FINISH = "tool_calls"
 
 
 def get_graph() -> Any:
@@ -40,14 +41,24 @@ async def produce_agent_events(query: QueryChat) -> AsyncIterator[SSEEventPayloa
     graph = get_graph()
     state0 = initial_state(query)
     final_state: dict[str, Any] = {}
+
+    prompt_hash = prompt_version_hash()
+    session_id = (query.conversation_id or "").strip() or "anonymous"
+
     try:
-        async for mode, event in graph.astream(
-            state0, stream_mode=["custom", "values"]
+
+        with propagate_attributes(
+            trace_name=f"chat_{query.model_name}",
+            session_id=session_id,
+            version=prompt_hash,
         ):
-            if mode == "values":
-                final_state = event
-                continue
-            yield event
+            async for mode, event in graph.astream(
+                state0, stream_mode=["custom", "values"]
+            ):
+                if mode == "values":
+                    final_state = event
+                    continue
+                yield event
     except asyncio.CancelledError:
         logger.warning("[runner] request cancelled")
         raise

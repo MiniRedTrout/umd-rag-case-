@@ -77,7 +77,7 @@ def _corpus_index_properties(embedding_fields: dict[str, int]) -> dict:
         properties[field_name] = {
             "type": "knn_vector",
             "dimension": dimension,
-            "method": {"name": "hnsw", "space_type": "cosinesimilarity", "engine": "faiss"},
+            "method": {"name": "hnsw", "space_type": "cosinesimil", "engine": "faiss"},
         }
     return properties
 
@@ -108,9 +108,15 @@ async def initialize_index(
                 analysis_block[key] = value
 
     settings = {
-        "index": {"knn": True, "knn.space_type": space_type},
+        "index": {
+            "knn": True,
+            "knn.space_type": space_type,
+            "refresh_interval": "-1",
+            "number_of_replicas": 0
+        },
         "analysis": analysis_block,
     }
+
     safe_fields = {
         sanitize_embedding_field_name(name): dimension
         for name, dimension in embedding_fields.items()

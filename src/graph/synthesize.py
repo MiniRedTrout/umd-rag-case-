@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
+from langfuse import get_client  # <-- LANGFUSE
 
 from src.core.config.agent_config import get_agent_config
 from src.graph.memory import remember, TurnMemory
+from src.graph.prompt import get_agent_system_prompt  # <-- ВАШ ПРОМПТ
 from src.graph.state import ChatGraphState
 from src.memory.history import persist_chat_history as _persist_chat_history_impl
 from src.models.errors import is_content_filtered
@@ -34,19 +37,12 @@ from src.utils.metrics import record_chat, record_generation, snapshot as metric
 
 NOT_FOUND_TEXT = "К сожалению, информация не найдена."
 
-SYSTEM_PROMPT = """Ты — ассистент по учебно-методической базе знаний.
-
-Если пользователь здоровается, прощается, благодарит или задаёт светский вопрос — ответь коротко и вежливо, без обращения к документам. Например: «Здравствуйте! Чем могу помочь?» или «Пожалуйста! Обращайтесь, если будут ещё вопросы.»
-
-Если это вопрос по существу — отвечай, опираясь ИСКЛЮЧИТЕЛЬНО на фрагменты документов ниже. Не выдумывай факты.
-
-Если в найденных фрагментах нет ответа на вопрос — скажи: «К сожалению, информация не найдена.»
-"""
-
 USER_PROMPT = """Вопрос: {question}
 
 Фрагменты документов:
 {context}"""
+
+_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
 async def _persist_chat_history(
@@ -115,6 +111,9 @@ def make_synthesize_node():
         llm_params.max_tokens = max(
             int(llm_params.max_tokens or 0), synthesis.answer_max_tokens
         )
+        
+        llm_params.temperature = 0.1 
+        
         collector = UsageCollector()
         model = LLMFactory(
             model_name=llm_params.model_name,
@@ -128,7 +127,7 @@ def make_synthesize_node():
 
         prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", SYSTEM_PROMPT),
+                ("system", get_agent_system_prompt()),
                 ("human", USER_PROMPT),
             ]
         )
@@ -147,41 +146,57 @@ def make_synthesize_node():
         finish_reason: FinishReason = "stop"
         generation_started: float | None = None
 
-        try:
-            async for chunk in chain.astream(payload, config=config):
-                chunk_count += 1
-                text = chunk.content if hasattr(chunk, "content") else str(chunk)
-                if not text:
-                    continue
-                if not first_token_seen:
-                    first_token_seen = True
-                    generation_started = time.monotonic()
-                    logger.info("[synthesize] first token received from LLM")
+        langfuse = get_client()
+        
+        with langfuse.start_as_current_observation(
+            as_type="generation", 
+            name="synthesize_llm",
+            model=llm_params.model_name,
+            input={"question": payload["question"], "context_length": len(payload["context"])}
+        ) as generation:
+            try:
+                async for chunk in chain.astream(payload, config=config):
+                    chunk_count += 1
+                    text = chunk.content if hasattr(chunk, "content") else str(chunk)
+                    if not text:
+                        continue
+                    if not first_token_seen:
+                        first_token_seen = True
+                        generation_started = time.monotonic()
+                        logger.info("[synthesize] first token received from LLM")
+                    if not started:
+                        started = True
+                        writer(message_start_event())
+                    answer += text
+                    writer(message_delta_event(text=text))
+
+            except Exception as exc:
+                error_type, provider_status = classify_exception(exc)
+                if not is_content_filtered(exc):
+                    logger.exception("[synthesize] answer generation failed")
+                finish_reason = (
+                    "content_filter"
+                    if error_type == "content_filter_error"
+                    else "error"
+                )
                 if not started:
                     started = True
                     writer(message_start_event())
-                answer += text
-                writer(message_delta_event(text=text))
-
-        except Exception as exc:  # noqa: BLE001
-            error_type, provider_status = classify_exception(exc)
-            if not is_content_filtered(exc):
-                logger.exception("[synthesize] answer generation failed")
-            finish_reason = (
-                "content_filter"
-                if error_type == "content_filter_error"
-                else "error"
-            )
-            if not started:
-                started = True
-                writer(message_start_event())
-            writer(
-                error_event(
-                    error_type=error_type,
-                    message=public_exception_message(exc),
-                    recoverable=False,
-                    provider_status=provider_status,
+                writer(
+                    error_event(
+                        error_type=error_type,
+                        message=public_exception_message(exc),
+                        recoverable=False,
+                        provider_status=provider_status,
+                    )
                 )
+
+            generation.update(
+                output=answer,
+                usage_details={
+                    "input": collector.total.get("input_tokens", 0),
+                    "output": collector.total.get("output_tokens", 0),
+                }
             )
 
         total_usage = merge_usage(total_usage, collector.total)
@@ -202,9 +217,12 @@ def make_synthesize_node():
         else:
             record_chat("answered")
 
+        references = _build_references(context, answer)
+
         logger.info(
             f"[synthesize] done: chunks={chunk_count}, "
             f"answer_chars={len(answer)}, finish_reason={finish_reason}, "
+            f"references={len(references)}, "
             f"usage={emitted_usage(total_usage, peak_usage)}; "
             f"metrics={metrics_snapshot()}"
         )
@@ -243,7 +261,7 @@ def make_synthesize_node():
             message_end_event(
                 text=answer,
                 finish_reason=finish_reason,
-                references=[],
+                references=references,
                 usage=emitted_usage(total_usage, peak_usage),
             )
         )
@@ -251,7 +269,7 @@ def make_synthesize_node():
         return {
             "answer_text": answer,
             "finish_reason": finish_reason,
-            "references": [],
+            "references": references,
             "total_usage": total_usage,
             "peak_usage": peak_usage,
         }
@@ -286,9 +304,43 @@ async def _emit_fixed(writer, text, state, total_usage, peak_usage) -> None:
 
 
 def _format_context(context: list[dict[str, Any]]) -> str:
+    """Render context blocks, each prefixed with ``[N]`` for citation."""
     blocks: list[str] = []
-    for entry in context:
+    for position, entry in enumerate(context, 1):
         title = entry.get("title") or entry.get("doc_id") or ""
         text = str(entry.get("text") or "")
-        blocks.append(f"### {title}\n{text}")
+        blocks.append(f"[{position}] ### {title}\n{text}")
     return "\n\n———\n\n".join(blocks)
+
+
+def _build_references(
+    context: list[dict[str, Any]], answer: str
+) -> list[dict[str, Any]]:
+    """Return the context entries the answer actually cited, in ``[N]`` order."""
+    if not context:
+        return []
+    cited: set[int] = set()
+    for match in _CITATION_RE.finditer(answer or ""):
+        try:
+            index = int(match.group(1))
+        except ValueError:
+            continue
+        if 1 <= index <= len(context):
+            cited.add(index)
+    if not cited:
+        return []
+    references: list[dict[str, Any]] = []
+    for index in sorted(cited):
+        entry = context[index - 1]
+        references.append(
+            {
+                "cite_key": f"c{index}",
+                "index": index,
+                "doc_id": entry.get("doc_id", ""),
+                "title": entry.get("title") or entry.get("doc_id", ""),
+                "url": entry.get("url", ""),
+                "path": entry.get("path", ""),
+                "chunk_range": entry.get("chunk_range", []),
+            }
+        )
+    return references

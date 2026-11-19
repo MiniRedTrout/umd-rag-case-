@@ -81,7 +81,7 @@ def _outline_level_from_xml(paragraph: Paragraph) -> int | None:
         return None
     value = outline.get(qn("w:val"))
     try:
-        level = int(value) + 1  # 0-based in OOXML → 1-based for us
+        level = int(value) + 1
     except (TypeError, ValueError):
         return None
     return level if 1 <= level <= 9 else None
@@ -134,10 +134,40 @@ def _heading_level(paragraph: Paragraph) -> int | None:
 def _table_to_markdown(table: Table) -> str:
     rows: list[list[str]] = []
     for row in table.rows:
-        cells = [
-            cell.text.strip().replace("\n", " ").replace("|", "\\|")
-            for cell in row.cells
-        ]
+        cells: list[str] = []
+        column = 0
+        for cell_xml in row._tr.tc_lst:
+            properties = cell_xml.tcPr
+            grid_span = properties.gridSpan
+            try:
+                span = int(grid_span.val) if grid_span is not None else 1
+            except (TypeError, ValueError):
+                span = 1
+
+            vertical_merge = properties.vMerge
+            is_continuation = (
+                vertical_merge is not None
+                and (vertical_merge.val is None or vertical_merge.val != "restart")
+            )
+            cell_text = _collapse_repeated_tokens(" ".join(cell_xml.itertext()).strip())
+            cell_text = cell_text.replace("\n", " ").replace("|", "\\|")
+
+            for offset in range(span):
+                if is_continuation or offset > 0:
+                    cells.append("")
+                else:
+                    cells.append(cell_text)
+            column += span
+        # Some Word exports repeat the value of a visually merged cell in
+        # adjacent XML cells without writing a ``gridSpan`` marker. Keep the
+        # first value and blank the repetitions so Markdown does not show a
+        # fake list of identical headers.
+        previous = None
+        for index, value in enumerate(cells):
+            if value and value == previous:
+                cells[index] = ""
+            elif value:
+                previous = value
         rows.append(cells)
     if not rows:
         return ""
@@ -147,6 +177,24 @@ def _table_to_markdown(table: Table) -> str:
     sep = "| " + " | ".join(["---"] * width) + " |"
     body = ["| " + " | ".join(row) + " |" for row in rows[1:]]
     return "\n".join([header, sep, *body])
+
+
+def _collapse_repeated_tokens(text: str) -> str:
+    """Collapse text duplicated by merged-cell exports.
+
+    Some DOCX producers put the same logical cell text into one XML cell
+    several times instead of using ``gridSpan``. Only exact repetitions of the
+    complete token sequence are collapsed; ordinary repeated words remain.
+    """
+    tokens = text.split()
+    for repetitions in range(2, min(20, len(tokens)) + 1):
+        if len(tokens) % repetitions:
+            continue
+        width = len(tokens) // repetitions
+        unit = tokens[:width]
+        if unit * repetitions == tokens:
+            return " ".join(unit)
+    return text
 
 
 def read_docx(content: bytes, *, name: str = "<bytes>") -> list[DocxBlock]:
@@ -210,8 +258,4 @@ def read_docx(content: bytes, *, name: str = "<bytes>") -> list[DocxBlock]:
             )
 
     elapsed = time.monotonic() - started
-    logger.info(
-        f"[docx] '{name}': {paragraphs} paragraphs ({headings} headings), "
-        f"{tables} tables, {len(blocks)} blocks in {elapsed * 1000:.0f} ms"
-    )
     return blocks
